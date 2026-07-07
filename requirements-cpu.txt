@@ -1,0 +1,25 @@
+# CPU-only runtime for this machine. Note: the installed Python 3.13 here is
+# the x86_64 (AMD64) build running under Windows-on-ARM64 emulation (Prism),
+# not a native ARM64 Python build -- platform.machine() reports the true ARM64
+# hardware, but pip resolves ordinary win_amd64 wheels, which have much better
+# availability than win_arm64-specific ones. If pip tries to build a package
+# from source instead of pulling a wheel, stop and investigate -- on this
+# machine that usually means a version pin has no cp313-win_amd64 wheel yet,
+# not something to just wait out.
+numpy
+opencv-python
+Pillow>=10,<11
+cryptography
+
+torch --index-url https://download.pytorch.org/whl/cpu
+transformers>=4.42
+sentencepiece
+accelerate
+diffusers>=0.27
+safetensors
+huggingface_hub
+
+chromadb
+requests
+openai
+python-dotenv

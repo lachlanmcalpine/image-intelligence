@@ -1,0 +1,7 @@
+# Optional upscale step (milestone 9), isolated from requirements-cpu.txt on
+# purpose. KNOWN ISSUE: basicsr imports torchvision.transforms.functional_tensor,
+# which was removed in modern torchvision. Either pin torchvision to a compatible
+# release or patch the import (torchvision.transforms.functional.rgb_to_grayscale)
+# before installing/using this. Do not let this block the core pipeline.
+basicsr
+realesrgan

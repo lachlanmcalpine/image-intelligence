@@ -1,0 +1,4 @@
+# Logic-only tests: no ML stack, no camera, no network needed to run these.
+numpy
+pytest
+cryptography

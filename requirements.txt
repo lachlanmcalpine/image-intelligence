@@ -1,0 +1,5 @@
+# Alias for now: this project has no GPU host yet, so there's no separate GPU
+# variant. Use requirements-cpu.txt directly (this file just points at it).
+# If/when this runs on real GPU hardware, split out requirements-gpu.txt then —
+# don't speculatively build it now.
+-r requirements-cpu.txt
