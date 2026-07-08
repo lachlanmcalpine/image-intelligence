@@ -13,6 +13,12 @@ class Embedder(Protocol):
         """Return a 1-D float32 embedding vector for a PIL Image or BGR ndarray."""
         ...
 
+    def embed_text(self, text: str) -> np.ndarray:
+        """Return a 1-D float32 embedding vector for a text query, in the same
+        space as embed() -- used for cross-modal text-to-image search.
+        """
+        ...
+
 
 class SigLipEmbedder:
     """Wraps google/siglip-base-patch16-224.
@@ -46,6 +52,15 @@ class SigLipEmbedder:
             # tensor -- .pooler_output is the single pooled per-image embedding;
             # last_hidden_state is unpooled per-patch features, not what we want.
             feats = self.model.get_image_features(**inputs)
+        return feats.pooler_output[0].cpu().numpy().astype(np.float32)
+
+    def embed_text(self, text: str) -> np.ndarray:
+        inputs = self.processor(text=[text], padding="max_length", return_tensors="pt").to(
+            self.device
+        )
+        with self._torch.no_grad():
+            # same BaseModelOutputWithPooling gotcha as get_image_features
+            feats = self.model.get_text_features(**inputs)
         return feats.pooler_output[0].cpu().numpy().astype(np.float32)
 
 

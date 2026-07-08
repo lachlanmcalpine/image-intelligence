@@ -24,6 +24,9 @@ class FakeEmbedder:
         rng = np.random.default_rng(seed)
         return rng.normal(size=self.dim).astype(np.float32)
 
+    def embed_text(self, text: str) -> np.ndarray:
+        return self.embed(text)
+
 
 @pytest.fixture
 def fake_embedder():

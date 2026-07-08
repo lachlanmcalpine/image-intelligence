@@ -26,3 +26,27 @@
   model weights, but C:\\ had 17.75 GB free by the time we got here (comfortably above budget)
   and the drive already held an unrelated face-anonymiser copy — reformatting it wasn't worth
   the risk for no real benefit. Revisit only if C:\\ space gets tight again.
+
+- **Railway-hosted Chroma has no auth.** Chroma dropped all built-in server authentication in
+  its v1.0.0 Rust rewrite (the old `CHROMA_SERVER_AUTHN_*` env vars are legacy/non-functional),
+  so `image-intelligence-production.up.railway.app` is reachable by anyone who has/guesses the
+  URL. Confidentiality is still intact — embeddings are stored orthogonal-matrix-transformed
+  (meaningless without the local `M`) and latents are AES-GCM encrypted (undecryptable without
+  the local key) — but there's no protection against someone writing garbage into the collection
+  or deleting it (integrity/availability, not confidentiality). Accepted for MVP. Revisit with a
+  reverse-proxy (Caddy/nginx) bearer-token layer in front of Chroma before this is anything
+  beyond a personal single-user test.
+
+- **Text-answer step uses Claude (Sonnet 5), not DeepSeek.** The original plan called for the
+  DeepSeek API, but its hosted API turned out to be text-only (no image input) as of this
+  writing — confirmed against DeepSeek's own docs. Switched to Anthropic's Claude API (Sonnet 5),
+  which the user already has an account for. Same e2ee tradeoff as originally planned: the
+  decrypted, reconstructed image leaves the device to this one third party at query time.
+
+- **Single model (Sonnet 5) for all answers, no Haiku/Sonnet tiering.** Considered routing
+  "simple" questions to Haiku and "deep" ones to Sonnet, but at this MVP's query volume the cost
+  difference is a fraction of a cent per query — not worth the complexity of classifying
+  questions by difficulty. Sonnet 5 for everything also removes model capability as a variable
+  while validating pipeline correctness. If a manual override is ever wanted (e.g. a `--deep`
+  flag the user passes explicitly rather than automatic classification), that's a cheap addition
+  later — not needed now.
