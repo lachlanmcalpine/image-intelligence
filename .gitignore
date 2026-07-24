@@ -6,3 +6,7 @@ models/
 keys/
 out/
 .env
+static/captures/
+static/query_results/
+static/thumbs/
+static/
