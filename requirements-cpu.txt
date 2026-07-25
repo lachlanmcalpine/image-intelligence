@@ -23,3 +23,7 @@ chromadb
 requests
 anthropic
 python-dotenv
+flask
+
+# OCR text channel (imgint/ocr.py) -- ONNX-based, no system binary
+rapidocr-onnxruntime

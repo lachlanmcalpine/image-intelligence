@@ -1,11 +1,16 @@
-"""Webcam frame capture. Correctness-first: no threading, no real-time
-buffering yet — grab-and-release per call, or a simple sleep-interval loop.
-"""
-
-import time
+"""Webcam frame capture."""
 
 import cv2
 import numpy as np
+
+# Requested at open time, before the first read -- MSMF can't reliably switch
+# resolution on an already-streaming capture (confirmed: raises a Mat
+# assertion error mid-stream). Chosen over the driver's 640x480 default after
+# directly comparing reconstructions: 1920x1080 gave visibly sharper detail
+# at every VAE encode size tested, at the cost of a wider (16:9) crop -- see
+# todo.md.
+DEFAULT_WIDTH = 1920
+DEFAULT_HEIGHT = 1080
 
 
 class CameraError(RuntimeError):
@@ -21,6 +26,8 @@ def capture_frame(index: int = 0, warmup_frames: int = 10) -> np.ndarray:
     if not cap.isOpened():
         raise CameraError(f"could not open camera index {index}")
     try:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, DEFAULT_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DEFAULT_HEIGHT)
         frame = None
         for _ in range(max(warmup_frames, 1)):
             ok, frame = cap.read()
@@ -31,25 +38,29 @@ def capture_frame(index: int = 0, warmup_frames: int = 10) -> np.ndarray:
         cap.release()
 
 
-def capture_loop(on_frame, interval_s: float = 2.0, index: int = 0, max_frames: int | None = None):
-    """Repeatedly capture a frame every `interval_s` seconds and call `on_frame(frame)`.
-
-    Keeps the camera open for the duration of the loop (unlike capture_frame,
-    which opens/releases per call) so repeated captures don't pay the camera
-    open/warm-up cost every time.
+class Camera:
+    """Keeps the camera open across many reads -- for repeated/real-time
+    capture, opening+warming up fresh every time (as capture_frame() does)
+    dominates latency. Warmup happens once, at construction.
     """
-    cap = cv2.VideoCapture(index)
-    if not cap.isOpened():
-        raise CameraError(f"could not open camera index {index}")
-    count = 0
-    try:
-        while max_frames is None or count < max_frames:
-            ok, frame = cap.read()
+
+    def __init__(self, index: int = 0, warmup_frames: int = 10):
+        self.cap = cv2.VideoCapture(index)
+        if not self.cap.isOpened():
+            raise CameraError(f"could not open camera index {index}")
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, DEFAULT_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, DEFAULT_HEIGHT)
+        for _ in range(max(warmup_frames, 1)):
+            ok, _ = self.cap.read()
             if not ok:
+                self.cap.release()
                 raise CameraError(f"could not read a frame from camera index {index}")
-            on_frame(frame)
-            count += 1
-            if max_frames is None or count < max_frames:
-                time.sleep(interval_s)
-    finally:
-        cap.release()
+
+    def read(self) -> np.ndarray:
+        ok, frame = self.cap.read()
+        if not ok:
+            raise CameraError("could not read a frame")
+        return frame
+
+    def release(self) -> None:
+        self.cap.release()

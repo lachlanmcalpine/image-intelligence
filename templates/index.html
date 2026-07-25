@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>image-intelligence</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  section { margin-bottom: 2rem; padding: 1rem; border: 1px solid #ddd; border-radius: 8px; }
+  button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+  input[type=text] { font-size: 1rem; padding: 0.5rem; width: 70%; }
+  #status { color: #666; font-size: 0.9rem; margin-top: 0.5rem; min-height: 1.2em; }
+  .gallery { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
+  .gallery img { width: 100px; height: 100px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; }
+  #answer { margin-top: 1rem; white-space: pre-wrap; line-height: 1.4; }
+  #answer-image { max-width: 100%; border-radius: 8px; margin-top: 0.75rem; display: none; }
+  .error { color: #b00020; }
+</style>
+</head>
+<body>
+
+<h1>image-intelligence</h1>
+
+<section>
+  <h2>Capture</h2>
+  <button id="capture-btn">Take picture</button>
+  <div id="capture-status"></div>
+
+  <div style="margin-top: 1rem;">
+    <button id="continuous-start-btn">Start continuous capture</button>
+    <button id="continuous-stop-btn" disabled>Stop</button>
+    <label style="margin-left: 0.5rem;">
+      interval (s):
+      <input type="number" id="interval-input" value="1.0" min="0.2" step="0.1" style="width: 4rem;">
+    </label>
+  </div>
+  <div id="continuous-status"></div>
+  <div id="queue-status"></div>
+
+  <div class="gallery" id="gallery"></div>
+</section>
+
+<section>
+  <h2>Ask</h2>
+  <input type="text" id="question" placeholder="e.g. did I see my wallet today?">
+  <select id="time-window">
+    <option value="">All time</option>
+    <option value="3600">Last hour</option>
+    <option value="86400">Last 24 hours</option>
+    <option value="604800">Last 7 days</option>
+  </select>
+  <button id="ask-btn">Ask</button>
+  <div id="query-status"></div>
+  <div id="answer"></div>
+  <div class="gallery" id="answer-images"></div>
+</section>
+
+<script>
+const captureBtn = document.getElementById('capture-btn');
+const captureStatus = document.getElementById('capture-status');
+const gallery = document.getElementById('gallery');
+
+const continuousStartBtn = document.getElementById('continuous-start-btn');
+const continuousStopBtn = document.getElementById('continuous-stop-btn');
+const intervalInput = document.getElementById('interval-input');
+const continuousStatus = document.getElementById('continuous-status');
+const queueStatus = document.getElementById('queue-status');
+
+const askBtn = document.getElementById('ask-btn');
+const questionInput = document.getElementById('question');
+const timeWindowSelect = document.getElementById('time-window');
+const queryStatus = document.getElementById('query-status');
+const answerEl = document.getElementById('answer');
+const answerImages = document.getElementById('answer-images');
+
+async function capture() {
+  captureBtn.disabled = true;
+  captureStatus.textContent = 'capturing...';
+  captureStatus.classList.remove('error');
+  try {
+    const res = await fetch('/capture', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'capture failed');
+    }
+    captureStatus.textContent = `queued (position ${data.queue_position})`;
+    const img = document.createElement('img');
+    img.src = data.thumbnail_url;
+    gallery.prepend(img);
+  } catch (err) {
+    captureStatus.textContent = err.message;
+    captureStatus.classList.add('error');
+  } finally {
+    captureBtn.disabled = false;
+  }
+}
+
+async function startContinuous() {
+  continuousStartBtn.disabled = true;
+  continuousStatus.classList.remove('error');
+  try {
+    const interval_s = parseFloat(intervalInput.value) || 1.0;
+    const res = await fetch('/capture/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_s }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'failed to start continuous capture');
+    }
+    continuousStopBtn.disabled = false;
+  } catch (err) {
+    continuousStatus.textContent = err.message;
+    continuousStatus.classList.add('error');
+    continuousStartBtn.disabled = false;
+  }
+}
+
+async function stopContinuous() {
+  continuousStopBtn.disabled = true;
+  try {
+    await fetch('/capture/stop', { method: 'POST' });
+  } finally {
+    continuousStartBtn.disabled = false;
+  }
+}
+
+async function pollStatus() {
+  try {
+    const res = await fetch('/status');
+    const data = await res.json();
+    continuousStatus.textContent = data.running
+      ? `running (interval ${data.interval_s}s)`
+      : 'stopped';
+    queueStatus.textContent =
+      `captured: ${data.captured_count} | processed: ${data.processed_count} | ` +
+      `skipped (dup): ${data.skipped_count} | failed: ${data.failed_count} | ` +
+      `queue depth: ${data.queue_depth}` +
+      (data.last_error ? ` | last error: ${data.last_error}` : '');
+    continuousStartBtn.disabled = data.running;
+    continuousStopBtn.disabled = !data.running;
+  } catch (err) {
+    // transient network hiccup while polling -- ignore, try again next tick
+  }
+}
+
+async function ask() {
+  const question = questionInput.value.trim();
+  if (!question) return;
+
+  askBtn.disabled = true;
+  queryStatus.textContent = 'thinking...';
+  queryStatus.classList.remove('error');
+  answerEl.textContent = '';
+  answerImages.innerHTML = '';
+
+  const body = { question, top_k: 3 };
+  const windowSecs = parseInt(timeWindowSelect.value, 10);
+  if (windowSecs) {
+    body.since = Date.now() / 1000 - windowSecs;
+  }
+
+  try {
+    const res = await fetch('/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'query failed');
+    }
+    if (!data.answer) {
+      queryStatus.textContent = data.message || 'no matches found';
+      return;
+    }
+    queryStatus.textContent = `${data.matches.length} match(es)`;
+    answerEl.textContent = data.answer;
+    for (const match of data.matches) {
+      const wrap = document.createElement('figure');
+      wrap.style.margin = '0';
+      const img = document.createElement('img');
+      img.src = match.image_url;
+      const cap = document.createElement('figcaption');
+      cap.style.fontSize = '0.7rem';
+      cap.style.color = '#666';
+      const when = match.timestamp
+        ? new Date(match.timestamp * 1000).toLocaleString()
+        : '';
+      cap.textContent = `${when} · d=${match.distance.toFixed(3)}`;
+      wrap.appendChild(img);
+      wrap.appendChild(cap);
+      answerImages.appendChild(wrap);
+    }
+  } catch (err) {
+    queryStatus.textContent = err.message;
+    queryStatus.classList.add('error');
+  } finally {
+    askBtn.disabled = false;
+  }
+}
+
+captureBtn.addEventListener('click', capture);
+continuousStartBtn.addEventListener('click', startContinuous);
+continuousStopBtn.addEventListener('click', stopContinuous);
+askBtn.addEventListener('click', ask);
+questionInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') ask();
+});
+
+pollStatus();
+setInterval(pollStatus, 1000);
+</script>
+
+</body>
+</html>

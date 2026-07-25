@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>capture</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#26303b; --text:#e7eef2; --dim:#8ea0aa; --accent:#5eead4; --warn:#f4b860; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:1rem; -webkit-text-size-adjust:100%; }
+  h1 { font-size:1.1rem; margin:0 0 .75rem; }
+  h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); margin:1.4rem 0 .5rem; }
+  .capture-btn { display:block; width:100%; padding:1.4rem; font-size:1.2rem; font-weight:600; border:none; border-radius:14px; background:var(--accent); color:#04211c; margin-bottom:.5rem; }
+  .capture-btn:active { opacity:.7; }
+  #file { display:none; }
+  #status-bar { display:flex; flex-wrap:wrap; gap:.4rem .8rem; font-size:.78rem; color:var(--dim); background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:.55rem .7rem; margin-bottom:.4rem; }
+  #status-bar b { color:var(--text); font-variant-numeric:tabular-nums; }
+  #status-bar .working { color:var(--warn); }
+  #upload-msg { color:var(--dim); font-size:.8rem; min-height:1.1em; margin-bottom:.5rem; }
+  .search-row { display:flex; gap:.5rem; }
+  #q { flex:1; padding:.8rem; font-size:1rem; border:1px solid var(--border); border-radius:10px; background:var(--panel); color:var(--text); }
+  #search-btn { padding:.8rem 1rem; font-size:1rem; border:1px solid var(--border); border-radius:10px; background:var(--panel); color:var(--text); }
+  .card { display:flex; gap:.75rem; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:.6rem; margin-bottom:.6rem; }
+  .card img { width:72px; height:72px; object-fit:cover; border-radius:8px; flex-shrink:0; background:#000; }
+  .card .noimg { width:72px; height:72px; border-radius:8px; flex-shrink:0; background:#0a0e12; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:.65rem; text-align:center; }
+  .card .meta { min-width:0; flex:1; }
+  .card .when { color:var(--dim); font-size:.7rem; }
+  .card .txt { font-size:.88rem; margin-top:.2rem; word-break:break-word; max-height:5.2em; overflow:hidden; }
+  .card .notext { color:var(--warn); font-style:italic; font-size:.82rem; margin-top:.2rem; }
+  .empty { color:var(--dim); font-size:.82rem; padding:.3rem 0; }
+</style>
+</head>
+<body>
+
+<h1>capture &amp; find</h1>
+
+<button class="capture-btn" id="capture-btn">📷 Capture what you see</button>
+<input type="file" id="file" accept="image/*" capture="environment">
+<div id="upload-msg"></div>
+<div id="status-bar">loading…</div>
+
+<div class="search-row">
+  <input type="text" id="q" placeholder="find text you saw… e.g. invoice">
+  <button id="search-btn">Find</button>
+</div>
+
+<h2 id="results-title">Recent captures</h2>
+<div id="results"><div class="empty">no captures yet — tap the button above.</div></div>
+
+<script>
+const TOKEN = "{{ ingest_token }}";
+const $ = (id) => document.getElementById(id);
+const captureBtn = $('capture-btn'), fileInput = $('file'), uploadMsg = $('upload-msg');
+const statusBar = $('status-bar'), q = $('q'), searchBtn = $('search-btn');
+const results = $('results'), resultsTitle = $('results-title');
+
+let mode = 'recent';   // 'recent' | 'search'
+let lastQuery = '';
+
+captureBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', async () => {
+  const file = fileInput.files[0];
+  if (!file) return;
+  fileInput.value = '';
+  uploadMsg.textContent = 'uploading…';
+  const form = new FormData();
+  form.append('image', file);
+  try {
+    const res = await fetch('/ingest', { method:'POST', headers:{ 'Authorization':'Bearer '+TOKEN }, body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'upload failed');
+    uploadMsg.textContent = '✓ captured — reading text & storing (queue #' + data.queue_position + ')…';
+    mode = 'recent'; resultsTitle.textContent = 'Recent captures';
+    // give the worker a moment, then refresh the recent view a few times
+    for (const d of [1500, 4000, 8000]) setTimeout(loadRecent, d);
+  } catch (err) {
+    uploadMsg.textContent = '⚠ ' + err.message;
+  }
+});
+
+function renderCards(matches, emptyMsg) {
+  if (!matches.length) { results.innerHTML = '<div class="empty">' + emptyMsg + '</div>'; return; }
+  results.innerHTML = '';
+  for (const m of matches) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const when = m.timestamp ? new Date(m.timestamp * 1000).toLocaleString() : '';
+    const img = m.thumbnail_url
+      ? '<img src="' + m.thumbnail_url + '">'
+      : '<div class="noimg">no<br>thumb</div>';
+    const body = m.text
+      ? '<div class="txt">' + m.text + '</div>'
+      : '<div class="notext">no text read from this shot</div>';
+    card.innerHTML = img + '<div class="meta"><div class="when">' + when + '</div>' + body + '</div>';
+    results.appendChild(card);
+  }
+}
+
+async function loadRecent() {
+  if (mode !== 'recent') return;
+  try {
+    const res = await fetch('/recent?limit=8');
+    const data = await res.json();
+    renderCards(data.matches, 'no captures yet — tap the button above.');
+  } catch (err) { /* transient; next tick */ }
+}
+
+async function search() {
+  const text = q.value.trim();
+  if (!text) { mode = 'recent'; resultsTitle.textContent = 'Recent captures'; loadRecent(); return; }
+  mode = 'search'; lastQuery = text; resultsTitle.textContent = 'Results for “' + text + '”';
+  results.innerHTML = '<div class="empty">searching…</div>';
+  try {
+    const res = await fetch('/search', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ text }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'search failed');
+    renderCards(data.matches, 'no capture has the text “' + text + '”. (Check the read text under Recent — OCR may have read it differently, or the shot was too blurry.)');
+  } catch (err) {
+    results.innerHTML = '<div class="empty">⚠ ' + err.message + '</div>';
+  }
+}
+searchBtn.addEventListener('click', search);
+q.addEventListener('keydown', (e) => { if (e.key === 'Enter') search(); });
+q.addEventListener('input', () => { if (!q.value.trim() && mode === 'search') { mode='recent'; resultsTitle.textContent='Recent captures'; loadRecent(); } });
+
+async function pollStatus() {
+  try {
+    const res = await fetch('/status');
+    const s = await res.json();
+    const working = s.queue_depth > 0;
+    statusBar.innerHTML =
+      (working ? '<span class="working">● processing ' + s.queue_depth + ' queued…</span>' : '<span>● idle</span>') +
+      ' <span>stored: <b>' + s.processed_count + '</b></span>' +
+      ' <span>skipped dup: <b>' + s.skipped_count + '</b></span>' +
+      ' <span>failed: <b>' + s.failed_count + '</b></span>' +
+      (s.last_error ? ' <span class="working">last error: ' + s.last_error + '</span>' : '');
+    if (working && mode === 'recent') loadRecent();  // refresh as items land
+  } catch (err) { statusBar.textContent = 'app not reachable'; }
+}
+
+loadRecent();
+pollStatus();
+setInterval(pollStatus, 2000);
+</script>
+
+</body>
+</html>

@@ -14,7 +14,8 @@ import numpy as np
 EXPECTED_LATENT_CHANNELS = 4  # SDXL-family. FLUX's VAE has 16 channels -- if
 # that ever shows up here, the wrong VAE family got loaded.
 
-TARGET_SIZE = 256  # fixed encode resolution so latent/storage size is predictable
+TARGET_SIZE = 128  # fixed encode resolution so latent/storage size is predictable --
+# chosen over 256/512 for latency+storage on this CPU-only machine; see todo.md
 
 
 class VAECodec(Protocol):

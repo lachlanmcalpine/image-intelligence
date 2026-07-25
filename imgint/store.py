@@ -36,8 +36,17 @@ def make_client(mode: str = "ephemeral"):
 class Store:
     def __init__(self, client, collection_name: str = COLLECTION_NAME):
         self.client = client
+        # hnsw:space must be explicit: Chroma defaults to L2, but
+        # transform_embedding() (imgint/crypto.py) only preserves *cosine*
+        # similarity under the orthogonal transform, not L2 distance --
+        # SigLIP embeddings aren't unit-normalized, so L2 nearest-neighbor
+        # ranks differently than cosine and silently returns the wrong
+        # match. Chroma fixes hnsw:space at creation time and ignores this
+        # metadata on an already-existing collection, so an existing
+        # non-cosine collection needs to be recreated, not just re-opened
+        # (see scripts/dev_fix_chroma_distance_space.py).
         self.collection = client.get_or_create_collection(
-            name=collection_name, embedding_function=None
+            name=collection_name, embedding_function=None, metadata={"hnsw:space": "cosine"}
         )
 
     def upsert(
@@ -47,22 +56,91 @@ class Store:
         nonce: bytes,
         ciphertext: bytes,
         extra_metadata: dict | None = None,
+        document: str | None = None,
     ) -> None:
+        """`document` is the frame's OCR text -- stored as Chroma's document
+        field (not auto-embedded, since embedding_function=None) so it's
+        searchable by substring via get_by_text without a vector or VLM call.
+        It is plaintext on the server: acceptable because text is far lower
+        stakes than the image (and the image stays AES-encrypted), but noted
+        as a deliberate exception to the "server sees nothing" posture -- see
+        todo.md.
+        """
         metadata = {
             "nonce_b64": base64.b64encode(nonce).decode("ascii"),
             "ciphertext_b64": base64.b64encode(ciphertext).decode("ascii"),
             "timestamp": time.time(),
             **(extra_metadata or {}),
         }
-        self.collection.upsert(
-            ids=[id],
-            embeddings=[_as_list(transformed_vec)],
-            metadatas=[metadata],
-        )
+        kwargs: dict[str, Any] = {
+            "ids": [id],
+            "embeddings": [_as_list(transformed_vec)],
+            "metadatas": [metadata],
+        }
+        # Chroma rejects empty-string documents; only attach when there's text
+        if document:
+            kwargs["documents"] = [document]
+        self.collection.upsert(**kwargs)
 
-    def query(self, transformed_query_vec, top_k: int = 5) -> list[dict[str, Any]]:
+    def get_by_text(self, text: str, limit: int = 10, where: dict | None = None) -> list[dict[str, Any]]:
+        """Case-insensitive substring search over stored OCR text -- 'find
+        frames whose visible text contains X'. No query vector, no VLM.
+        Optionally scoped by a metadata `where` (e.g. a timestamp window).
+        Returns newest-first.
+
+        Filters client-side (lowercased) rather than via Chroma's
+        where_document, whose $contains is case-SENSITIVE -- a real usability
+        trap ("Baby" not matching stored "baby"). Fine at prototype scale;
+        for a large collection this should move to a proper case-insensitive
+        full-text index (pgvector tsvector / a lowercased indexed field). See
+        todo.md.
+        """
+        needle = text.lower()
+        rows = self._get_all(where)
+        matches = [r for r in rows if r["document"] and needle in r["document"].lower()]
+        matches.sort(key=lambda m: m["metadata"].get("timestamp", 0), reverse=True)
+        return matches[:limit]
+
+    def get_recent(self, limit: int = 10, where: dict | None = None) -> list[dict[str, Any]]:
+        """The most recent records (newest first), regardless of text -- powers
+        the 'recent captures' feed so you can see what was just captured and
+        what text was read from it."""
+        rows = self._get_all(where)
+        rows.sort(key=lambda m: m["metadata"].get("timestamp", 0), reverse=True)
+        return rows[:limit]
+
+    def _get_all(self, where: dict | None) -> list[dict[str, Any]]:
+        kwargs: dict[str, Any] = {"include": ["metadatas", "documents"]}
+        if where is not None:
+            kwargs["where"] = where
+        result = self.collection.get(**kwargs)
+        documents = result.get("documents") or [None] * len(result["ids"])
+        rows = []
+        for id_, metadata, document in zip(result["ids"], result["metadatas"], documents):
+            rows.append(
+                {
+                    "id": id_,
+                    "nonce": base64.b64decode(metadata["nonce_b64"]),
+                    "ciphertext": base64.b64decode(metadata["ciphertext_b64"]),
+                    "document": document,
+                    "metadata": metadata,
+                }
+            )
+        return rows
+
+    def query(
+        self, transformed_query_vec, top_k: int = 5, where: dict | None = None
+    ) -> list[dict[str, Any]]:
+        """`where` is a Chroma metadata filter (e.g. a timestamp range built by
+        pipeline._time_where) applied *before* nearest-neighbor ranking -- time
+        is the primary axis for most questions ("what did I do today"), so
+        filtering must scope the search, not post-filter its results.
+        """
+        kwargs: dict[str, Any] = {}
+        if where is not None:
+            kwargs["where"] = where
         result = self.collection.query(
-            query_embeddings=[_as_list(transformed_query_vec)], n_results=top_k
+            query_embeddings=[_as_list(transformed_query_vec)], n_results=top_k, **kwargs
         )
         ids = result["ids"][0]
         metadatas = result["metadatas"][0]

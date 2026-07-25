@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from imgint.codec import SdxlVaeCodec
+from imgint.codec import TARGET_SIZE, SdxlVaeCodec
 
 
 class _FakeConfig:
@@ -75,14 +75,15 @@ def test_decode_output_shape_matches_upscaled_latent():
     fake_vae = _FakeVae(scaling_factor=1.0)
     codec = SdxlVaeCodec(vae=fake_vae)
 
-    # encode() always resizes to the fixed TARGET_SIZE (256) first, regardless
-    # of input size, so per-frame latent/storage size is predictable.
+    # encode() always resizes to the fixed TARGET_SIZE first, regardless of
+    # input size, so per-frame latent/storage size is predictable.
+    expected_latent_side = TARGET_SIZE // 8
     pixel_values = np.zeros((64, 96, 3), dtype=np.uint8)
     latent = codec.encode(pixel_values)
-    assert latent.shape == (4, 32, 32)  # 256 / 8 = 32
+    assert latent.shape == (4, expected_latent_side, expected_latent_side)
 
     img = codec.decode(latent)
-    assert img.shape == (256, 256, 3)  # 32 * 8 = 256
+    assert img.shape == (TARGET_SIZE, TARGET_SIZE, 3)
     assert img.dtype == np.uint8
 
 
